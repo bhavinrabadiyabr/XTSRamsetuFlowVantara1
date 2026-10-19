@@ -1,0 +1,56 @@
+{
+  "ok": true,
+  "date": "2026-06-09",
+  "source": "live",
+  "articleUrl": "https://www.moneycontrol.com/news/business/markets/stocks-to-watch-today-nlc-india-irb-infrastructure-rail-vikas-nigam-jnk-india-bharti-airtel-vodafone-idea-nrb-bearings-in-focus-on-09-june-13944185.html",
+  "scrapeNotes": "discovered_score=130;ok",
+  "llmNotes": "ok",
+  "error": "",
+  "items": [
+    {
+      "symbol": "NLCINDIA",
+      "stock": "NLC India",
+      "impact": "BEARISH",
+      "one_liner": "Govt to sell up to 3% stake via OFS with floor price of Rs 303 per share."
+    },
+    {
+      "symbol": "IRB",
+      "stock": "IRB Infrastructure Developers",
+      "impact": "BULLISH",
+      "one_liner": "Toll revenue increased sharply by 25% YoY to Rs 843 crore in May."
+    },
+    {
+      "symbol": "BHARTIARTL",
+      "stock": "Panacea Biotec",
+      "impact": "BULLISH",
+      "one_liner": "Launched DENSTAR project to advance licensure of its dengue vaccine, DengiAll."
+    },
+    {
+      "symbol": "GRASIM",
+      "stock": "Grasim Industries",
+      "impact": "BULLISH",
+      "one_liner": "Announced Rs 3,094 crore investment for Phase II expansion of Lyocell capacity."
+    },
+    {
+      "symbol": "WIPRO",
+      "stock": "Wipro",
+      "impact": "BULLISH",
+      "one_liner": "Launched AI Innovation Zone in collaboration with Google Cloud to scale AI applications."
+    },
+    {
+      "symbol": "SUZLON",
+      "stock": "Suzlon Energy",
+      "impact": "BULLISH",
+      "one_liner": "Commissioned wind blade manufacturing plant at Halol, Gujarat."
+    },
+    {
+      "symbol": "KAJARIACER",
+      "stock": "Cera",
+      "impact": "BEARISH",
+      "one_liner": "HDFC Standard Life Insurance Company nearly exited its investment by selling 1.16% stake."
+    }
+  ],
+  "articleTextPreview": "Let's catch up on the latest news from the stock market. From significant investments to major deals, order wins, and stake sale, here\u2019s a quick look at which stocks will be in focus in today's trade:\n\nThe Government of India will sell up to a 3 percent stake in NLC India through an offer-for-sale (OFS), with a floor price of Rs 303 per share. The OFS will open on June 9 for non-retail investors and on June 10 for retail investors.\n\nThe company's toll revenue increased sharply by 25 percent year-on-year to Rs 843 crore in May, compared to Rs 672 crore in the corresponding month last year.\n\nThe company announced the launch of the DENSTAR project, which aims to advance the licensure of its dengue vaccine, DengiAll, in sub-Saharan Africa (sSA) and facilitate its broader global adoption.\n\nThe four-year initiative is funded under the Global Health European & Developing Countries Clinical Trials Partnership 3 Joint Undertaking (GH EDCTP3 JU), supported by the European Union.\n\nThe company announced an investment of Rs 3,094 crore for the Phase II expansion of its Lyocell capacity by 110 KTPA at Harihar, Karnataka. The expansion will comprise two production lines of 55 KTPA (150 tonnes per",
+  "rawLlmCount": 14,
+  "cachedAt": "2026-06-09T07:39:38.053182+00:00"
+}
