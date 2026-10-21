@@ -775,8 +775,15 @@ class XtsMarketDataClient:
             self._socketio_path = XTS_MD_SOCKETIO_PATH
         url = self._rest("auth/login")
         r = self.session.post(url, json=payload, timeout=self.timeout_s)
-        r.raise_for_status()
-        data = r.json()
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+        if r.status_code >= 400 or not isinstance(data, dict):
+            desc = ""
+            if isinstance(data, dict):
+                desc = str(data.get("description") or data.get("code") or "").strip()
+            raise RuntimeError(desc or f"XTS marketdata_login HTTP {r.status_code}")
         if data.get("type") != "success":
             raise RuntimeError(data.get("description") or "XTS marketdata_login failed")
         res = data.get("result") or {}
