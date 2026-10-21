@@ -1,7 +1,7 @@
 """
 API Binary market transport.
 
-Real XTS/Investeria feeds use **Socket.IO over Engine.IO** (WebSocket upgrade), not a plain
+Real XTS feeds use **Socket.IO over Engine.IO** (WebSocket upgrade), not a plain
 ``wss://`` URL. Production stack here:
 
 - **Synchronous path (default):** ``xts_md.MarketDataStreamer`` + ``python-socketio.Client``

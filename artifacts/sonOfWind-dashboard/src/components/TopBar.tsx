@@ -8,7 +8,6 @@ import type { ChainResolved } from "@/types/market";
 import { liveAtmStrikeForChain } from "@/lib/liveAtmStrike";
 import { fmtPct, fmtPrice } from "@/lib/formatNumber";
 import { liveTapeLtp } from "@/lib/liveQuote";
-import { useLocation } from "wouter";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 const INDICES: readonly IndexName[] = ["SENSEX", "NIFTY", "BANKNIFTY"];
@@ -169,7 +168,6 @@ export default function TopBar({
 }: TopBarProps) {
   const [time, setTime] = useState(new Date());
   const { state, logout } = useAuth();
-  const [, navigate] = useLocation();
   const ltps = useLiveLtp();
   const hilo = useLiveHiLo();
   const spotDayRefByToken = useLiveSpotDayRef();
@@ -509,9 +507,10 @@ export default function TopBar({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  onClick={async () => {
-                    await logout();
-                    navigate("/login");
+                  onClick={() => {
+                    void logout().finally(() => {
+                      window.location.assign("/login");
+                    });
                   }}
                 >
                   Logout

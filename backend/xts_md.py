@@ -11,6 +11,7 @@ import requests
 
 from market.ltp_pick import OPTION_REST_STALE_SEC, apply_feed_ltp, pick_ltp_for_display
 from market.packet_decoder import _msg_to_dashboard_row, decode_xts_binary_packet
+from xts_host import broker_root, hostlookup, marketdata_base
 
 
 def _env(name: str, default: str = "") -> str:
@@ -21,7 +22,7 @@ def _env(name: str, default: str = "") -> str:
 def _md_auth_failed(data: Any = None, snippet: str = "", status_code: int | None = None) -> bool:
     """True when the MD gateway rejected the call for a missing/expired session token.
 
-    Investeria/XTS often returns HTTP 400 ``Please Provide token to Authenticate``
+    XTS often returns HTTP 400 ``Please Provide token to Authenticate``
     (not ``Invalid Token`` / 401). Treat those as a re-login trigger.
     """
     parts: list[str] = [str(snippet or "")]
@@ -54,7 +55,10 @@ def _md_auth_failed(data: Any = None, snippet: str = "", status_code: int | None
     return sc in (401, 403) and ("token" in blob or "auth" in blob)
 
 
-XTS_MD_ROOT = _env("XTS_MD_ROOT", "https://trading.investeria.in").rstrip("/")
+def _md_root() -> str:
+    return (_env("XTS_MD_ROOT", "") or broker_root()).strip().rstrip("/")
+
+
 XTS_MD_SOURCE = _env("XTS_MD_SOURCE", "WEBAPI")
 XTS_MD_SOCKETIO_PATH = _env("XTS_MD_SOCKETIO_PATH", "apibinarymarketdata/socket.io")
 XTS_MD_PUBLISH_FORMAT = _env("XTS_MD_PUBLISH_FORMAT", "JSON")
@@ -590,6 +594,13 @@ def _extract_ltp_map_from_quote_response(obj: object) -> dict[int, float]:
     return out
 
 
+def _md_already_subscribed(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    blob = " ".join(str(data.get(k) or "") for k in ("description", "message", "code")).lower()
+    return "already subscribed" in blob
+
+
 def _md_subscription_response_ok(resp: Any) -> bool:
     """
     Subscription REST responses vary by host (parity with XTS_OPTIONS_DASHBOARD `_md_subscription_response_ok`).
@@ -630,8 +641,18 @@ class XtsMarketDataClient:
         self.timeout_s = timeout_s
         self.session = requests.Session()
         self._md: XtsMarketDataSession | None = None
+        self._md_base = ""
+        self._socket_origin = ""
+        self._socketio_path = ""
         self._quote_lock = threading.Lock()
         self._login_lock = threading.Lock()
+
+    def _rest(self, tail: str) -> str:
+        base = (self._md_base or f"{_md_root()}/apibinarymarketdata").rstrip("/")
+        return f"{base}/{str(tail).lstrip('/')}"
+
+    def socketio_path(self) -> str:
+        return (self._socketio_path or XTS_MD_SOCKETIO_PATH).lstrip("/")
 
     def has_token(self) -> bool:
         return bool(self._md and str(self._md.token or "").strip())
@@ -737,8 +758,22 @@ class XtsMarketDataClient:
             return self._login_unlocked()
 
     def _login_unlocked(self) -> XtsMarketDataSession:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/auth/login"
+        root = _md_root()
+        version = _env("XTS_MD_HOSTLOOKUP_VERSION", "binarymarketdata_1.0.2").strip() or "binarymarketdata_1.0.2"
+        looked = hostlookup(root, version, self.timeout_s)
         payload = {"appKey": self.api_key, "secretKey": self.api_secret, "source": XTS_MD_SOURCE}
+        if looked:
+            connection_string, unique_key = looked
+            rest_base, origin, socket_path = marketdata_base(connection_string, root)
+            self._md_base = rest_base
+            self._socket_origin = origin
+            self._socketio_path = socket_path
+            payload["uniqueKey"] = unique_key
+        else:
+            self._md_base = f"{root}/apibinarymarketdata"
+            self._socket_origin = root
+            self._socketio_path = XTS_MD_SOCKETIO_PATH
+        url = self._rest("auth/login")
         r = self.session.post(url, json=payload, timeout=self.timeout_s)
         r.raise_for_status()
         data = r.json()
@@ -756,7 +791,7 @@ class XtsMarketDataClient:
         return md
 
     def subscribe(self, instruments: list[dict[str, Any]], xts_message_code: int) -> dict[str, Any]:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/subscription"
+        url = self._rest("instruments/subscription")
 
         normed: list[dict[str, int]] = []
         for inst in instruments:
@@ -818,6 +853,9 @@ class XtsMarketDataClient:
                             last_exc = RuntimeError(f"subscription HTTP {r.status_code}: {snippet[:200] or 'auth token missing'}")
                             continue
 
+                        if _md_already_subscribed(data):
+                            return data if isinstance(data, dict) else {"type": "success", "description": "already subscribed"}
+
                         if isinstance(data, dict) and _md_subscription_response_ok(data):
                             return data
 
@@ -861,14 +899,14 @@ class XtsMarketDataClient:
         if not self._md:
             raise RuntimeError("marketdata session not initialized")
         return (
-            f"{XTS_MD_ROOT}/?token={self._md.token}"
+            f"{(self._socket_origin or _md_root()).rstrip('/')}/?token={self._md.token}"
             f"&userID={self._md.user_id}"
             f"&publishFormat={XTS_MD_PUBLISH_FORMAT}"
             f"&broadcastMode={XTS_MD_BROADCAST_MODE}"
         )
 
     def get_expiry_date(self, exchange_segment: int, series: str, symbol: str) -> dict[str, Any]:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/instrument/expiryDate"
+        url = self._rest("instruments/instrument/expiryDate")
         seg = int(exchange_segment)
         ser = str(series).strip()
         sym = str(symbol).strip()
@@ -889,7 +927,7 @@ class XtsMarketDataClient:
         option_type: str,
         strike_price: float,
     ) -> dict[str, Any]:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/instrument/optionsymbol"
+        url = self._rest("instruments/instrument/optionsymbol")
         seg = int(exchange_segment)
         ser = str(series).strip()
         sym = str(symbol).strip()
@@ -924,7 +962,7 @@ class XtsMarketDataClient:
     def _get_quote_unlocked(
         self, instruments: list[dict[str, Any]], xts_message_code: int, publish_format: str = "JSON"
     ) -> dict[str, Any]:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/quotes"
+        url = self._rest("instruments/quotes")
         code = int(xts_message_code)
 
         # Normalize instruments: gateways can be picky about int vs str + key casing.
@@ -1028,7 +1066,7 @@ class XtsMarketDataClient:
         Docs: https://developers.symphonyfintech.in/doc/apimarketdata/#OHLC
         Response: result.dataReponse = ``ts|o|h|l|c|v|oi,ts|o|...``
         """
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/ohlc"
+        url = self._rest("instruments/ohlc")
         seg = int(exchange_segment)
         iid = int(exchange_instrument_id)
         comp = str(compression_value)
@@ -1066,7 +1104,7 @@ class XtsMarketDataClient:
         return self._request_get_json_with_variants(url, params_candidates=params_candidates)
 
     def search_by_instrument_id(self, instruments: list[dict[str, Any]]) -> dict[str, Any]:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/search/instrumentsbyid"
+        url = self._rest("search/instrumentsbyid")
 
         normalized: list[dict[str, Any]] = []
         for x in instruments:
@@ -1137,14 +1175,14 @@ class XtsMarketDataClient:
         raise last_err or RuntimeError("search_by_instrument_id_failed")
 
     def get_index_list(self, exchange_segment: int) -> dict[str, Any]:
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/indexlist"
+        url = self._rest("instruments/indexlist")
         seg = int(exchange_segment)
         params_candidates = [{"exchangeSegment": seg}, {"ExchangeSegment": seg}, {"exchangeSegment": str(seg)}, {"ExchangeSegment": str(seg)}]
         return self._request_get_json_with_variants(url, params_candidates=params_candidates)
 
     def search_by_string(self, search_string: str) -> dict[str, Any]:
         """Symphony SDK route: GET /search/instruments …"""
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/search/instruments"
+        url = self._rest("search/instruments")
         q = str(search_string).strip()
         params_candidates = [{"searchString": q}, {"SearchString": q}, {"searchstring": q}]
         return self._request_get_json_with_variants(url, params_candidates=params_candidates)
@@ -1155,7 +1193,7 @@ class XtsMarketDataClient:
         Returns the raw dataset (often pipe-separated lines). Caller should persist/cache once per day.
         Doc: https://developers.symphonyfintech.in/doc/apimarketdata/#instruments-master
         """
-        url = f"{XTS_MD_ROOT}/apibinarymarketdata/instruments/master"
+        url = self._rest("instruments/master")
         segs = [str(x).strip() for x in (exchange_segment_list or []) if str(x).strip()]
         if not segs:
             raise ValueError("exchange_segment_list is required")
@@ -1929,7 +1967,7 @@ def _parse_index_list_entries(data: dict[str, Any], segment: int) -> list[tuple[
 
 
 # Common UI/index key → exact instrument names that appear in /instruments/indexlist (case-insensitive).
-# These are taken from a verified Investeria response (segment=1):
+# These are taken from a verified XTS index list (segment=1):
 #     NIFTY 50_26000, NIFTY BANK_26001, INDIA VIX_26002, …
 INDEX_NAME_ALIASES: dict[str, tuple[str, ...]] = {
     "NIFTY": ("NIFTY 50",),
@@ -2504,7 +2542,7 @@ class MarketDataStreamer:
             self._ingest_symphony_candle(data)
 
         url = self._client.socket_url()
-        self._sid.connect(url, transports=["websocket"], socketio_path=XTS_MD_SOCKETIO_PATH)
+        self._sid.connect(url, transports=["websocket"], socketio_path=self._client.socketio_path())
         self._touch_socket_rx()
 
     def _resubscribe_after_restart(self, instruments: list[dict[str, int]]) -> None:

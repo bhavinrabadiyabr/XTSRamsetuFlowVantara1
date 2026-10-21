@@ -1,9 +1,11 @@
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
+
+from xts_host import broker_root, hostlookup, interactive_base
 
 
 def _generic_broker_text(msg: str) -> bool:
@@ -21,7 +23,7 @@ def _generic_broker_text(msg: str) -> bool:
 
 
 def _xts_error_body(data: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Investeria sometimes wraps {err: true, data: {type, code, description}}."""
+    """XTS sometimes wraps {err: true, data: {type, code, description}}."""
     if not isinstance(data, dict):
         return None
     inner = data.get("data")
@@ -116,7 +118,13 @@ def _xts_error_message(data: dict[str, Any] | None, r: requests.Response | None 
 
 
 XTS_SOURCE = "WEBAPI"
-XTS_ROOT = "https://trading.investeria.in"
+
+
+def _env(name: str, default: str = "") -> str:
+    import os
+
+    v = os.getenv(name)
+    return default if v is None else str(v)
 
 
 @dataclass
@@ -126,6 +134,7 @@ class XtsSession:
     is_investor_client: bool
     is_pro_client: bool
     created_at: float
+    client_codes: tuple[str, ...] = field(default_factory=tuple)
 
 
 class XtsInteractiveClient:
@@ -135,6 +144,7 @@ class XtsInteractiveClient:
         self.timeout_s = timeout_s
         self.session = requests.Session()
         self._xts: XtsSession | None = None
+        self._ix_base = ""
 
     @property
     def is_investor_client(self) -> bool:
@@ -148,15 +158,51 @@ class XtsInteractiveClient:
             return False
         return bool(getattr(self._xts, "is_pro_client", False))
 
+    def mapped_client_id(self) -> str:
+        """Dealer orders use the first mapped client code. Investor sessions omit clientID."""
+        if not self._xts:
+            return ""
+        if self._xts.client_codes:
+            return str(self._xts.client_codes[0])
+        if self._xts.is_investor_client:
+            return ""
+        return str(self._xts.user_id or "")
+
     def _headers(self) -> dict[str, str]:
         h: dict[str, str] = {"Content-Type": "application/json"}
         if self._xts and self._xts.token:
             h["Authorization"] = self._xts.token
         return h
 
+    def _abs(self, path: str) -> str:
+        base = (self._ix_base or f"{broker_root()}/interactive").rstrip("/")
+        p = path if str(path).startswith("/") else f"/{path}"
+        if p.startswith("/interactive/"):
+            p = p[len("/interactive") :]
+        return base + p
+
+    def _dealer(self) -> bool:
+        return bool(self._xts) and not bool(self._xts.is_investor_client)
+
     def login(self) -> XtsSession:
-        url = f"{XTS_ROOT}/interactive/user/session"
-        payload = {"appKey": self.api_key, "secretKey": self.api_secret, "source": XTS_SOURCE}
+        root = broker_root()
+        version = _env("XTS_IX_HOSTLOOKUP_VERSION", "interactive_1.0.2").strip() or "interactive_1.0.2"
+        looked = hostlookup(root, version, self.timeout_s)
+        payload: dict[str, Any] = {
+            "appKey": self.api_key,
+            "secretKey": self.api_secret,
+            "source": _env("XTS_SOURCE", XTS_SOURCE).strip() or XTS_SOURCE,
+        }
+        if looked:
+            connection_string, unique_key = looked
+            self._ix_base = interactive_base(connection_string, root)
+            payload["uniqueKey"] = unique_key
+            access = _env("XTS_ACCESS_TOKEN", "").strip()
+            if access:
+                payload["accessToken"] = access
+        else:
+            self._ix_base = f"{root}/interactive"
+        url = f"{self._ix_base.rstrip('/')}/user/session"
         r = self.session.post(url, json=payload, timeout=self.timeout_s)
         r.raise_for_status()
         data = r.json()
@@ -169,6 +215,10 @@ class XtsInteractiveClient:
             or str(res.get("userType") or res.get("UserType") or "").upper() in ("PRO", "PROCLIENT", "PROPRIETARY")
         )
         uid = str(res.get("userID") or "")
+        raw_codes = res.get("clientCodes") or res.get("ClientCodes") or []
+        if isinstance(raw_codes, str):
+            raw_codes = [raw_codes]
+        codes = tuple(str(c).strip() for c in raw_codes if str(c).strip())
         if not is_pro and uid.upper().endswith("PRO") and len(uid) >= 6:
             is_pro = True
         xts = XtsSession(
@@ -177,6 +227,7 @@ class XtsInteractiveClient:
             is_investor_client=bool(res.get("isInvestorClient")),
             is_pro_client=is_pro,
             created_at=time.time(),
+            client_codes=codes,
         )
         if not xts.token:
             raise RuntimeError("XTS login missing token")
@@ -184,7 +235,7 @@ class XtsInteractiveClient:
         return xts
 
     def get_balance(self, client_id: str | None = None) -> dict[str, Any]:
-        url = f"{XTS_ROOT}/interactive/user/balance"
+        url = self._abs("/interactive/user/balance")
         params = {}
         if client_id:
             params["clientID"] = client_id
@@ -193,7 +244,7 @@ class XtsInteractiveClient:
         return r.json()
 
     def get_profile(self, client_id: str | None = None) -> dict[str, Any]:
-        url = f"{XTS_ROOT}/interactive/user/profile"
+        url = self._abs("/interactive/user/profile")
         params = {}
         if client_id:
             params["clientID"] = client_id
@@ -204,7 +255,7 @@ class XtsInteractiveClient:
     def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._xts or not str(getattr(self._xts, "token", "") or "").strip():
             raise RuntimeError("XTS interactive session has no token — login required")
-        url = f"{XTS_ROOT}{path}"
+        url = self._abs(path)
         r = self.session.get(url, params=(params or {}), headers=self._headers(), timeout=self.timeout_s)
         try:
             data = r.json()
@@ -219,7 +270,7 @@ class XtsInteractiveClient:
     def _post(self, path: str, *, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._xts or not str(getattr(self._xts, "token", "") or "").strip():
             raise RuntimeError("XTS interactive session has no token — login required")
-        url = f"{XTS_ROOT}{path}"
+        url = self._abs(path)
         r = self.session.post(url, json=(payload or {}), headers=self._headers(), timeout=self.timeout_s)
         try:
             data = r.json()
@@ -234,7 +285,7 @@ class XtsInteractiveClient:
     def _put(self, path: str, *, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._xts or not str(getattr(self._xts, "token", "") or "").strip():
             raise RuntimeError("XTS interactive session has no token — login required")
-        url = f"{XTS_ROOT}{path}"
+        url = self._abs(path)
         r = self.session.put(url, json=(payload or {}), headers=self._headers(), timeout=self.timeout_s)
         try:
             data = r.json()
@@ -249,7 +300,7 @@ class XtsInteractiveClient:
     def _delete(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._xts or not str(getattr(self._xts, "token", "") or "").strip():
             raise RuntimeError("XTS interactive session has no token — login required")
-        url = f"{XTS_ROOT}{path}"
+        url = self._abs(path)
         r = self.session.delete(url, params=(params or {}), headers=self._headers(), timeout=self.timeout_s)
         try:
             data = r.json()
@@ -269,8 +320,9 @@ class XtsInteractiveClient:
         params: dict[str, Any] = {}
         if client_id:
             params["clientID"] = client_id
+        path = "/interactive/orders/dealerorderbook" if self._dealer() else "/interactive/orders"
         try:
-            return self._get("/interactive/orders", params=params)
+            return self._get(path, params=params)
         except Exception as e:
             if _xts_empty_data_error(e):
                 return {"type": "success", "result": []}
@@ -284,8 +336,9 @@ class XtsInteractiveClient:
         params: dict[str, Any] = {}
         if client_id:
             params["clientID"] = client_id
+        path = "/interactive/orders/dealertradebook" if self._dealer() else "/interactive/orders/trades"
         try:
-            return self._get("/interactive/orders/trades", params=params)
+            return self._get(path, params=params)
         except Exception as e:
             if _xts_empty_data_error(e):
                 return {"type": "success", "result": []}
@@ -300,8 +353,9 @@ class XtsInteractiveClient:
         params: dict[str, Any] = {"dayOrNet": str(day_or_net or "NetWise")}
         if client_id:
             params["clientID"] = client_id
+        path = "/interactive/portfolio/dealerpositions" if self._dealer() else "/interactive/portfolio/positions"
         try:
-            return self._get("/interactive/portfolio/positions", params=params)
+            return self._get(path, params=params)
         except Exception as e:
             if _xts_empty_data_error(e):
                 return {"type": "success", "result": {"positionList": []}}

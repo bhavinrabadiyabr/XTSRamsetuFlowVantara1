@@ -7,13 +7,14 @@ import NiftySnakePanel from "@/components/NiftySnakePanel";
 import NiftyBothSidePanel from "@/components/NiftyBothSidePanel";
 import NiftySnakeBothSidePanel from "@/components/NiftySnakeBothSidePanel";
 import NiftyVwapPanel from "@/components/NiftyVwapPanel";
+import OneMinFastPanel from "@/components/OneMinFastPanel";
 import { SENSEX_DESK } from "@/lib/niftyVwapRules";
 import { bumpPositionsRefresh } from "@/lib/ixPortfolio";
 import { loadBothSideSession } from "@/lib/niftyBothSideRules";
 import { loadBothSideSession as loadSnakeBothSideSession } from "@/lib/niftySnakeBothSideRules";
 
 const RIGHT_TAB_KEY = "sow_right_pane_tab";
-type RightTab = "ladder" | "snake" | "bothside" | "snakebothside" | "vwap" | "sensexvwap";
+type RightTab = "ladder" | "snake" | "bothside" | "snakebothside" | "vwap" | "sensexvwap" | "fast1";
 
 function loadRightTab(): RightTab {
   try {
@@ -21,7 +22,7 @@ function loadRightTab(): RightTab {
     if (loadSnakeBothSideSession()) return "snakebothside";
     if (loadBothSideSession()) return "bothside";
     const s = sessionStorage.getItem(RIGHT_TAB_KEY) || localStorage.getItem(RIGHT_TAB_KEY);
-    if (s === "snake" || s === "bothside" || s === "snakebothside" || s === "vwap" || s === "sensexvwap") {
+    if (s === "snake" || s === "bothside" || s === "snakebothside" || s === "vwap" || s === "sensexvwap" || s === "fast1") {
       return s;
     }
     return "ladder";
@@ -127,6 +128,13 @@ export default function OptionsChain({
         >
           Sensex Wish
         </button>
+        <button
+          type="button"
+          className={`sow-glass-tab${rightTab === "fast1" ? " sow-glass-tab--active" : ""}`}
+          onClick={() => selectTab("fast1")}
+        >
+          1 min Fast
+        </button>
         {/* <button
           type="button"
           className={`sow-glass-tab${rightTab === "bothside" ? " sow-glass-tab--active" : ""}`}
@@ -193,6 +201,9 @@ export default function OptionsChain({
           </div>
           <div className={rightTab === "sensexvwap" ? "flex flex-1 min-h-0 flex-col overflow-hidden" : "hidden"}>
             <NiftyVwapPanel chain={resolved} active={rightTab === "sensexvwap"} desk={SENSEX_DESK} />
+          </div>
+          <div className={rightTab === "fast1" ? "flex flex-1 min-h-0 flex-col overflow-hidden" : "hidden"}>
+            <OneMinFastPanel key={resolved.index} chain={resolved} active={rightTab === "fast1"} />
           </div>
           <div className={rightTab === "bothside" ? "flex flex-1 min-h-0 flex-col overflow-hidden" : "hidden"}>
             <NiftyBothSidePanel chain={resolved} />

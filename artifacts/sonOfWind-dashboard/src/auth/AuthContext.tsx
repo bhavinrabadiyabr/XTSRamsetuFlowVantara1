@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { apiFetch, setAuthToken } from "@/lib/backend";
+import { apiFetch, getAuthToken, setAuthToken } from "@/lib/backend";
 
 type AuthState =
   | { status: "loading"; username: null }
@@ -19,14 +19,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: "loading", username: null });
 
   const refresh = useCallback(async () => {
-    setState(s => (s.status === "loading" ? s : { status: "loading", username: null }));
+    if (!getAuthToken()) {
+      setState({ status: "anon", username: null });
+      return;
+    }
     try {
       const me = (await apiFetch("/api/auth/me")) as { loggedIn: boolean; username?: string | null };
-      if (me.loggedIn && me.username) setState({ status: "authed", username: String(me.username) });
-      else setState({ status: "anon", username: null });
+      if (me.loggedIn && me.username) {
+        setState({ status: "authed", username: String(me.username) });
+        return;
+      }
     } catch {
-      setState({ status: "anon", username: null });
+      /* token rejected */
     }
+    setAuthToken("");
+    setState({ status: "anon", username: null });
   }, []);
 
   useEffect(() => {
@@ -52,10 +59,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     try {
       await apiFetch("/api/auth/logout", { method: "POST" });
-    } finally {
-      setAuthToken("");
-      setState({ status: "anon", username: null });
+    } catch {
+      /* local session still ends */
     }
+    setAuthToken("");
+    setState({ status: "anon", username: null });
   }, []);
 
   const value = useMemo<AuthContextValue>(() => ({ state, refresh, login, logout }), [state, refresh, login, logout]);

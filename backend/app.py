@@ -13,8 +13,7 @@ from datetime import date, datetime, timedelta
 
 from flask import Flask, has_request_context, jsonify, make_response, request, session, stream_with_context
 from flask_cors import CORS
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from werkzeug.security import check_password_hash
+from itsdangerous import URLSafeTimedSerializer
 
 from ix_order_chase import (
     app_order_id_from,
@@ -77,7 +76,6 @@ ALLOWED_ORIGINS = [
     "https://son-of-wind-opt-flow-son-of-wind-dashboard-871lwhf2s.vercel.app",
     r"^https://.*\.vercel\.app$",
     # Production / preview frontend (Render)
-    "https://trading.investeria.in",
     r"^https://.*\.onrender\.com$",
 ]
 
@@ -147,7 +145,7 @@ _load_tokens_from_disk()
 VIX_INSTRUMENT_ID = int(_env("XTS_VIX_INSTRUMENT_ID", "26002"))
 VIX_SEGMENT_ID = int(_env("XTS_VIX_SEGMENT", "1"))
 
-# XTS exchange → numeric segment id (Investeria binary market data convention).
+# XTS exchange → numeric segment id (binary market data convention).
 # Mirrors XTS_OPTIONS_DASHBOARD/xts_integration.py SEG_MAP.
 EXCHANGE_SEGMENTS: dict[str, int] = {
     "NSECM": 1,
@@ -266,12 +264,65 @@ INDEX_MD_SPECS: dict[str, dict[str, object]] = {
 }
 
 
+def _operator_id() -> str:
+    return (_env("XTS_LOGIN_USER", "").strip().upper() or _env("XTS_OPERATOR_ID", "SANKALP").strip().upper() or "SANKALP")
+
+
+def _login_accounts() -> dict[str, dict[str, str]]:
+    """Dashboard users. Each row carries that login's own Interactive and Market Data keys."""
+
+    def add(user: str, password: str, ix_key: str, ix_secret: str, md_key: str, md_secret: str, out: dict[str, dict[str, str]]) -> None:
+        name = str(user or "").strip().upper()
+        if not name or password is None or password == "":
+            return
+        out[name] = {
+            "password": str(password),
+            "ix_key": str(ix_key or "").strip(),
+            "ix_secret": str(ix_secret or "").strip(),
+            "md_key": str(md_key or "").strip(),
+            "md_secret": str(md_secret or "").strip(),
+        }
+
+    accounts: dict[str, dict[str, str]] = {}
+    add(
+        _env("XTS_LOGIN_USER", ""),
+        _env("XTS_LOGIN_PASSWORD", ""),
+        _env("XTS_IX_APP_KEY", ""),
+        _env("XTS_IX_APP_SECRET", ""),
+        _env("XTS_MD_APP_KEY", ""),
+        _env("XTS_MD_APP_SECRET", ""),
+        accounts,
+    )
+    add(
+        _env("XTS_LOGIN_USER_2", ""),
+        _env("XTS_LOGIN_PASSWORD_2", ""),
+        _env("XTS_IX_APP_KEY_2", ""),
+        _env("XTS_IX_APP_SECRET_2", ""),
+        _env("XTS_MD_APP_KEY_2", ""),
+        _env("XTS_MD_APP_SECRET_2", ""),
+        accounts,
+    )
+    return accounts
+
+
+def _account_row(username: str) -> dict[str, str] | None:
+    return _login_accounts().get(str(username or "").strip().upper())
+
+
+def _request_token() -> str:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return str(request.args.get("token") or "").strip()
+
+
 def _ensure_market_streamer(username: str) -> None:
-    users = _load_users()
-    rec = users.get(username)
-    if not isinstance(rec, dict) or not rec.get("md_key") or not rec.get("md_secret"):
-        raise RuntimeError("Marketdata credentials missing for this user")
-    _MD_STREAMER.start(api_key=str(rec["md_key"]), api_secret=str(rec["md_secret"]))
+    row = _account_row(username)
+    key = (row or {}).get("md_key") or _env("XTS_MD_APP_KEY", "").strip()
+    secret = (row or {}).get("md_secret") or _env("XTS_MD_APP_SECRET", "").strip()
+    if not key or not secret:
+        raise RuntimeError("Marketdata credentials missing (XTS_MD_APP_KEY / XTS_MD_APP_SECRET)")
+    _MD_STREAMER.start(api_key=key, api_secret=secret)
 
 
 @app.get("/api/md/index_specs")
@@ -300,132 +351,54 @@ def md_index_specs():
     return jsonify({"ok": True, "indices": out})
 
 
-def _load_users() -> dict[str, object]:
-    """
-    Multi-user store:
-    - Reads from backend/users.json by default
-    - Override path via USERS_FILE env
-    - If file missing/invalid, falls back to env (APP_USERNAME/APP_PASSWORD)
-    """
-    users_file = _env("USERS_FILE", str(Path(__file__).with_name("users.json")))
-    p = Path(users_file)
-
-    if p.exists() and p.is_file():
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8") or "{}")
-            if isinstance(raw, dict):
-                out: dict[str, object] = {}
-                for k, v in raw.items():
-                    u = str(k or "").strip().upper()
-                    if not u:
-                        continue
-                    out[u] = v
-                if out:
-                    return out
-        except Exception:
-            pass
-
-    demo_user = _env("APP_USERNAME", "SR04").strip().upper()
-    demo_pass = _env("APP_PASSWORD", "1234").strip()
-    return {demo_user: {"password": demo_pass}} if demo_user and demo_pass else {}
-
-
-def _verify_password(user_record: object, password: str) -> bool:
-    if not password:
-        return False
-
+def _token_user(token: str) -> str | None:
+    if not token:
+        return None
+    cached = _TOKENS.get(token)
+    if cached:
+        return str(cached).strip().upper() or None
     try:
-        # Simple format: {"SR04": "1234"}
-        if isinstance(user_record, str):
-            if len(user_record) != len(password):
-                return False
-            return secrets.compare_digest(user_record, password)
-
-        # Rich format: {"SR04": {"password": "..."} } or {"password_hash": "..."}
-        if isinstance(user_record, dict):
-            if "password_hash" in user_record and isinstance(user_record.get("password_hash"), str):
-                return bool(check_password_hash(user_record["password_hash"], password))
-            if "password" in user_record and isinstance(user_record.get("password"), str):
-                plain = user_record["password"]
-                if len(plain) != len(password):
-                    return False
-                return secrets.compare_digest(plain, password)
+        data = _AUTH.loads(token, max_age=_AUTH_TOKEN_MAX_AGE_S)
     except Exception:
-        return False
-
-    return False
+        return None
+    user = str((data or {}).get("u") or "").strip().upper()
+    if not user:
+        return None
+    _TOKENS[token] = user
+    return user
 
 
 def _current_user() -> str | None:
-    # EventSource cannot send Authorization; allow ?token=
-    qs = request.args.get("token", type=str)
-    if qs and qs.strip():
-        qst = qs.strip()
-        if qst in _TOKENS:
-            return str(_TOKENS[qst])
-        # Accept stateless tokens in querystring too.
-        try:
-            data = _AUTH.loads(qst, max_age=_AUTH_TOKEN_MAX_AGE_S)
-            if isinstance(data, dict) and data.get("u"):
-                return str(data["u"])
-        except (SignatureExpired, BadSignature):
-            pass
-
-    # Prefer Bearer token (works across refresh without cookies)
-    auth = (request.headers.get("Authorization") or "").strip()
-    if auth.lower().startswith("bearer "):
-        token = auth.split(" ", 1)[1].strip()
-        u = _TOKENS.get(token)
-        if u:
-            return str(u)
-        # Stateless token fallback (survives restarts)
-        try:
-            data = _AUTH.loads(token, max_age=_AUTH_TOKEN_MAX_AGE_S)
-            if isinstance(data, dict) and data.get("u"):
-                return str(data["u"])
-        except (SignatureExpired, BadSignature):
-            pass
-
-    u = session.get("username")
-    if not u:
-        return None
-    return str(u)
+    """Dashboard session. Either configured login is accepted."""
+    user = _token_user(_request_token())
+    if user and user in _login_accounts():
+        return user
+    return None
 
 
 @app.get("/api/auth/me")
 def auth_me():
     u = _current_user()
-    return jsonify({"loggedIn": bool(u), "username": u})
+    if not u:
+        return jsonify({"loggedIn": False, "username": None})
+    return jsonify({"loggedIn": True, "username": u})
 
 
 @app.post("/api/auth/login")
 def auth_login():
     try:
-        data = request.get_json(silent=True) or {}
-        username = str(data.get("username") or "").strip().upper()
-        password = str(data.get("password") or "").strip()
-
-        if not username or not password:
-            return jsonify({"ok": False, "error": "Username and password required"}), 400
-
-        users = _load_users()
-        rec = users.get(username)
-        if not _verify_password(rec, password):
+        body = request.get_json(silent=True) or {}
+        given_user = str(body.get("username") or "").strip().upper()
+        given_pass = str(body.get("password") or "")
+        row = _account_row(given_user)
+        if not row or given_pass != row["password"]:
             return jsonify({"ok": False, "error": "Invalid username or password"}), 401
-
-        # Issue token for frontend persistence (avoid cookie SameSite issues).
-        # Use stateless signed token so it stays valid across Render restarts (requires stable FLASK_SECRET_KEY).
+        username = given_user
         token = str(_AUTH.dumps({"u": username}))
-        _TOKENS[token] = username  # optional cache
-        _save_tokens_to_disk()  # back-compat: harmless if FS is ephemeral/read-only
-
+        _TOKENS[token] = username
+        _save_tokens_to_disk()
         session.permanent = True
         session["username"] = username
-        # Save client_id mapping for dealer accounts (SRxxPRO)
-        if isinstance(rec, dict) and rec.get("user_id"):
-            session["client_id"] = str(rec.get("user_id"))
-
-        # Do NOT do broker login here (it makes login slow). Margin API will lazily login.
         return jsonify({"ok": True, "username": username, "token": token})
     except Exception as e:
         app.logger.exception("auth_login")
@@ -2254,6 +2227,27 @@ def api_sensex_vwap_data():
         )
 
 
+@app.get("/api/fast1/open")
+def api_fast1_open():
+    """Locked 09:20 one-minute spot open. Nifty or Sensex follows the query."""
+    username = (_current_user() or "").strip().upper()
+    if not username:
+        return jsonify({"ok": False, "error": "Unauthorized", "spot": None, "pending": False}), 401
+    underlying = str(request.args.get("underlying") or "NIFTY")
+    try:
+        _ensure_market_streamer(username)
+        from market.dashboard_connector import wire_market_streamer
+        from market.fast1_open import get_open
+        from market.nifty_vwap import set_vwap_md_client
+
+        wire_market_streamer(_MD_STREAMER)
+        set_vwap_md_client(lambda: _MD_STREAMER.rest_client())
+        return jsonify(get_open(underlying))
+    except Exception as exc:
+        app.logger.exception("api_fast1_open failed")
+        return jsonify({"ok": False, "pending": True, "error": str(exc), "spot": None, "source": None})
+
+
 def _expand_json_strings_shallow(obj: object, depth: int = 0) -> object:
     """XTS quotes may embed JSON dicts as strings; expand best-effort."""
     if depth > 6 or obj is None:
@@ -3045,7 +3039,7 @@ def api_margin():
                 hidden = True
             else:
                 raw_cid = str(client_id or "").strip()
-                oc = "*****" if raw_cid.upper().endswith("PRO") else (raw_cid or None)
+                oc = raw_cid or None
                 rb = None
                 try:
                     rb = ix.get_balance(client_id=oc)
@@ -3141,23 +3135,8 @@ def api_margin():
     )
 
 
-def _ix_pro_placeholder() -> str:
-    ph = str(_env("XTS_IX_PRO_PLACEHOLDER_CLIENT_ID", "*****")).strip()
-    return ph if ph else "*****"
-
-
-def _ix_id_looks_proprietary_cli(cid: str) -> bool:
-    """Investeria Pro logins use *PRO ids (e.g. SR01PRO); sending that string as clientID → CLI order (rejected)."""
-    c = str(cid or "").strip().upper()
-    return len(c) >= 6 and c.endswith("PRO")
-
-
 def _ix_order_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None:
-    """
-    Proprietary *PRO users: real ID as clientID = "CLI" (rejected); omitting = "ClientID cannot be empty".
-    V33 Investeria build uses placeholder ``*****`` in the order body; same default here via
-    XTS_IX_PRO_PLACEHOLDER_CLIENT_ID (default *****).
-    """
+    """Dealer books use the mapped client code. Investor sessions omit clientID."""
     if str(_env("XTS_IX_OMIT_ORDER_CLIENT_ID", "")).strip().lower() in ("1", "true", "yes"):
         return None
 
@@ -3165,42 +3144,47 @@ def _ix_order_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None
     if env_oid:
         return env_oid
 
-    cid = str(client_id or "").strip()
-
     if getattr(ix, "is_investor_client", False):
         return None
 
-    if getattr(ix, "is_pro_client", False) or _ix_id_looks_proprietary_cli(cid):
-        return _ix_pro_placeholder()
-
+    cid = str(client_id or "").strip() or str(getattr(ix, "mapped_client_id", lambda: "")() or "").strip()
     return cid or None
+
+
+def _ix_is_pro_order_client(client_id: str | None) -> bool:
+    """PRO59-style codes are proprietary. This gateway rejects them as CLI orders."""
+    cid = str(client_id or "").strip().upper()
+    return cid.startswith("PRO")
+
+
+def _ix_place_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None:
+    """Place/modify sends ***** for a Pro client. Books and positions keep the real code."""
+    real = _ix_order_client_for(ix, client_id)
+    if not real or not _ix_is_pro_order_client(real):
+        return real
+    placeholder = str(_env("XTS_IX_PRO_PLACEHOLDER_CLIENT_ID", "*****")).strip() or "*****"
+    return placeholder
+
+
+def _ix_as_pro_market(payload: dict[str, Any]) -> dict[str, Any]:
+    """PRO59 may not place Limit. This gateway allows that client only as Market."""
+    payload["orderType"] = "MARKET"
+    payload["limitPrice"] = 0
+    payload["stopPrice"] = 0
+    payload["timeInForce"] = "IOC"
+    return payload
+
+
+def _algo_forbids_market(err: BaseException) -> bool:
+    """ALGO logins reject MARKET and limitPrice 0 (e-orders-0002)."""
+    s = str(err).lower()
+    return "e-orders-0002" in s or "not allowed for algo" in s
 
 
 def _ix_query_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None:
-    """
-    clientID for portfolio/order-book GETs.
-
-    PRO: same ***** placeholder as place_order. Omitting → e-order-0003
-    "ClientID is not provided". Sending SR01PRO → 400 / CLI reject.
-    """
-    if str(_env("XTS_IX_OMIT_ORDER_CLIENT_ID", "")).strip().lower() in ("1", "true", "yes"):
-        return None
     if str(_env("XTS_IX_OMIT_QUERY_CLIENT_ID", "")).strip().lower() in ("1", "true", "yes"):
         return None
-
-    cid = str(client_id or "").strip()
-
-    if getattr(ix, "is_investor_client", False):
-        return None
-
-    if getattr(ix, "is_pro_client", False) or _ix_id_looks_proprietary_cli(cid):
-        return _ix_pro_placeholder()
-
-    env_qid = str(_env("XTS_IX_QUERY_CLIENT_ID", "")).strip()
-    if env_qid and not _ix_id_looks_proprietary_cli(env_qid):
-        return env_qid
-
-    return cid or None
+    return _ix_order_client_for(ix, client_id)
 
 
 def _ix_rate_limited(err: BaseException) -> bool:
@@ -3262,14 +3246,9 @@ def _ix_is_bad_client_id_error(err: BaseException) -> bool:
 
 
 def _ix_query_candidates(ix: XtsInteractiveClient, client_id: str) -> list:
-    """PRO dealer: ***** then omit. Do not send SR01 / *PRO — not mapped / CLI reject."""
-    out: list = []
-    ph = _ix_pro_placeholder()
-    if ph not in out:
-        out.append(ph)
-    if None not in out:
-        out.append(None)
-    return out
+    """Dealer book/positions use the mapped client code from the session login."""
+    oc = _ix_query_client_for(ix, client_id)
+    return [oc]
 
 
 def _ix_payload_row_count(data: Any) -> int:
@@ -3327,7 +3306,7 @@ def _ix_invoke_query(ix: XtsInteractiveClient, fn, oc):
                 except Exception as le:
                     app.logger.warning("ix re-login failed: %s", le)
                     raise e from le
-        # Fresh login still cannot fetch positions while Investeria quota is cooling.
+        # Fresh login still cannot fetch positions while the broker quota is cooling.
         if any(
             ":pos" in str(k) and float(v or 0) > time.time() for k, v in _IX_PORTFOLIO_COOLDOWN.items()
         ):
@@ -3336,18 +3315,13 @@ def _ix_invoke_query(ix: XtsInteractiveClient, fn, oc):
 
 
 def _ix_call_query(ix: XtsInteractiveClient, client_id: str, fn):
-    """Try ***** then omit. Keep first payload that has rows. Empty-data is not a crash.
-    Rate-limit is not retried with another clientID — same GET /portfolio/* quota."""
+    """Query with the mapped dealer client code. Empty-data is not a crash."""
     last_session = None
     saw_empty = False
     best = None
     best_n = -1
     cands = _ix_query_candidates(ix, client_id)
-    ph = _ix_pro_placeholder()
     remembered = _IX_QUERY_OC_OK.get(id(ix), "__unset__")
-    if remembered not in (ph, None, "__unset__"):
-        _IX_QUERY_OC_OK.pop(id(ix), None)
-        remembered = "__unset__"
     if remembered != "__unset__":
         cands = [remembered] + [c for c in cands if c != remembered]
     for oc in cands:
@@ -3645,7 +3619,7 @@ def _coerce_algo_limit_order(
     return payload
 
 
-# Investeria interactive POST /interactive/orders validates exchangeSegment as string enum (Joi string.base), not int.
+# Interactive POST /interactive/orders validates exchangeSegment as a string enum, not an int.
 _IX_SEGMENT_ID_TO_NAME = {
     1: "NSECM",
     2: "NSEFO",
@@ -3665,23 +3639,29 @@ def _ix_segment_as_enum_string(seg_int: int) -> str:
     )
 
 
+def _stamp_algo(payload: dict[str, Any]) -> dict[str, Any]:
+    """This host rejects algoID / algoName on POST /interactive/orders (Joi: not allowed)."""
+    for key in ("algoID", "algoId", "algoName", "AlgoID", "AlgoName"):
+        payload.pop(key, None)
+    return payload
+
+
 def _ensure_ix_client(username: str) -> tuple[XtsInteractiveClient | None, str]:
     """
     Ensure interactive client is logged in (best-effort).
-    Returns (client or None, client_id string possibly empty).
+    Returns (client or None, mapped client code).
     Proactively calls login() again when the cached session is older than XTS_IX_TOKEN_MAX_AGE_SEC
     (default 18h) so the Authorization token is not expired on the wire.
     """
-    users = _load_users()
-    rec = users.get(username)
-    client_id = ""
-    if has_request_context():
-        client_id = str(session.get("client_id") or "").strip()
-    if not client_id and isinstance(rec, dict):
-        client_id = str(rec.get("user_id") or rec.get("client_id") or "").strip()
+    row = _account_row(username)
+    key = (row or {}).get("ix_key") or _env("XTS_IX_APP_KEY", "").strip()
+    secret = (row or {}).get("ix_secret") or _env("XTS_IX_APP_SECRET", "").strip()
 
     with _IX_CLIENT_LOCK:
         ix = _XTS_IX.get(username)
+        if ix is not None and (getattr(ix, "api_key", "") != key or getattr(ix, "api_secret", "") != secret):
+            _XTS_IX.pop(username, None)
+            ix = None
         try:
             max_age = float(str(_env("XTS_IX_TOKEN_MAX_AGE_SEC", str(18 * 3600))).strip() or str(18 * 3600))
         except ValueError:
@@ -3708,11 +3688,17 @@ def _ensure_ix_client(username: str) -> tuple[XtsInteractiveClient | None, str]:
                     _XTS_IX.pop(username, None)
                     ix = None
 
-        if not ix and isinstance(rec, dict) and rec.get("ix_key") and rec.get("ix_secret"):
-            ix = XtsInteractiveClient(api_key=str(rec["ix_key"]), api_secret=str(rec["ix_secret"]))
+        if not ix and key and secret:
+            ix = XtsInteractiveClient(api_key=key, api_secret=secret)
             ix.timeout_s = 6.0
             ix.login()
             _XTS_IX[username] = ix
+
+        client_id = _env("XTS_CLIENT_ID", "").strip()
+        if not client_id and ix is not None:
+            client_id = ix.mapped_client_id()
+        if client_id and has_request_context():
+            session["client_id"] = client_id
         return ix, client_id
 
 
@@ -3945,15 +3931,21 @@ def _ix_execute_pending_as_market(
             "orderUniqueIdentifier": _v33_style_order_unique_identifier(iid, side),
             "apiOrderSource": payload.get("apiOrderSource") or "WEBAPI",
         }
-        coerced = _coerce_algo_limit_order(
-            market_payload,
-            body={"ltp": ltp, "bid": bid, "ask": ask},
-            side=side,
-            iid=iid,
-            seg=seg,
-            username=username,
-        )
-        hint = coerced.pop("_fillHint", None)
+        _stamp_algo(market_payload)
+        chase_body = {"ltp": ltp, "bid": bid, "ask": ask}
+        if _ix_is_pro_order_client(oc):
+            coerced = _ix_as_pro_market(market_payload)
+            hint = {"ltp": ltp, "bid": bid, "ask": ask, "limitPrice": 0}
+        else:
+            coerced = _coerce_algo_limit_order(
+                market_payload,
+                body=chase_body,
+                side=side,
+                iid=iid,
+                seg=seg,
+                username=username,
+            )
+            hint = coerced.pop("_fillHint", None)
         app.logger.info(
             "pending->market iid=%s side=%s qty=%s ltp=%s limit=%s",
             iid,
@@ -3962,7 +3954,23 @@ def _ix_execute_pending_as_market(
             ltp,
             coerced.get("limitPrice"),
         )
-        placed = ix.place_order(client_id=oc, order=coerced)
+        place_id = _ix_place_client_for(ix, oc or "")
+        try:
+            placed = ix.place_order(client_id=place_id, order=coerced)
+        except Exception as exc:
+            if not _algo_forbids_market(exc):
+                raise
+            app.logger.warning("ALGO rejected market or price 0; chase retry is LIMIT (%s)", exc)
+            coerced = _coerce_algo_limit_order(
+                market_payload,
+                body=chase_body,
+                side=side,
+                iid=iid,
+                seg=seg,
+                username=username,
+            )
+            hint = coerced.pop("_fillHint", None)
+            placed = ix.place_order(client_id=place_id, order=coerced)
         reject = _xts_place_reject_reason(placed)
         if reject:
             raise RuntimeError(reject)
@@ -4067,18 +4075,56 @@ def api_ix_place_order():
             "orderUniqueIdentifier": uniq,
             "apiOrderSource": api_src,
         }
-        try:
-            payload = _coerce_algo_limit_order(
-                payload, body=body, side=side, iid=iid, seg=seg, username=username
-            )
-        except ValueError as ve:
-            return _json_no_store({"ok": False, "error": str(ve)}, status=400)
-
-        fill_hint = payload.pop("_fillHint", None)
+        _stamp_algo(payload)
+        order_base = dict(payload)
+        pro_order = _ix_is_pro_order_client(_ix_order_client_for(ix, client_id))
+        if pro_order:
+            _ix_as_pro_market(payload)
+            fill_hint = {
+                "ltp": float(body.get("ltp") or 0),
+                "bid": float(body.get("bid") or 0),
+                "ask": float(body.get("ask") or 0),
+                "limitPrice": 0,
+            }
+        else:
+            try:
+                payload = _coerce_algo_limit_order(
+                    payload, body=body, side=side, iid=iid, seg=seg, username=username
+                )
+            except ValueError as ve:
+                return _json_no_store({"ok": False, "error": str(ve)}, status=400)
+            fill_hint = payload.pop("_fillHint", None)
 
         oc = _ix_order_client_for(ix, client_id)
+        app.logger.info(
+            "place_order side=%s iid=%s type=%s limit=%s pro=%s client=%s",
+            side,
+            iid,
+            payload.get("orderType"),
+            payload.get("limitPrice"),
+            pro_order,
+            oc,
+        )
+
+        def _send_priced(client: XtsInteractiveClient, order_client: str | None) -> Any:
+            nonlocal payload, fill_hint
+            place_id = _ix_place_client_for(client, order_client or "")
+            try:
+                return client.place_order(client_id=place_id, order=payload)
+            except Exception as exc:
+                if not _algo_forbids_market(exc):
+                    raise
+                app.logger.warning("ALGO rejected market or price 0; retrying LIMIT (%s)", exc)
+                payload = _coerce_algo_limit_order(
+                    dict(order_base), body=body, side=side, iid=iid, seg=seg, username=username
+                )
+                fill_hint = payload.pop("_fillHint", None)
+                return client.place_order(client_id=place_id, order=payload)
+
         try:
-            res = ix.place_order(client_id=oc, order=payload)
+            res = _send_priced(ix, client_id)
+        except ValueError as ve:
+            return _json_no_store({"ok": False, "error": str(ve)}, status=400)
         except Exception as e1:
             if not _ix_should_retry_auth(str(e1)):
                 raise
@@ -4089,7 +4135,10 @@ def api_ix_place_order():
                 raise RuntimeError("Interactive re-login failed after token error") from e1
             ix = ix2
             oc = _ix_order_client_for(ix2, cid2)
-            res = ix.place_order(client_id=oc, order=payload)
+            try:
+                res = _send_priced(ix2, cid2)
+            except ValueError as ve:
+                return _json_no_store({"ok": False, "error": str(ve)}, status=400)
         _ix_drop_position_cache(username)
         reject = _xts_place_reject_reason(res)
         execute_pending = bool(body.get("executeIfPending") or body.get("execute_if_pending"))
@@ -4172,10 +4221,11 @@ def api_ix_place_order():
                 sleep=time.sleep,
             )
             if not settled.get("ok"):
+                broker_reason = _xts_place_reject_reason(settled.get("raw"))
                 return _json_no_store(
                     {
                         "ok": False,
-                        "error": settled.get("error") or reject or "Order not filled",
+                        "error": settled.get("error") or reject or broker_reason or "Order not filled",
                         "request": payload,
                         "raw": settled.get("raw") or res,
                         "fillHint": fill_hint,
@@ -4352,14 +4402,29 @@ def api_ix_exit_open_positions():
                     "orderUniqueIdentifier": uniq,
                     "apiOrderSource": "WEBAPI",
                 }
+                _stamp_algo(payload)
+                exit_base = dict(payload)
                 coerce_body = dict(p) if isinstance(p, dict) else {}
                 coerce_body["liveReprice"] = True
-                payload = _coerce_algo_limit_order(
-                    payload, body=coerce_body, side=exit_side, iid=int(iid), seg=seg, username=username
-                )
-                payload.pop("_fillHint", None)
-                oc_exit = _ix_order_client_for(ix, client_id)
-                r = ix.place_order(client_id=oc_exit, order=payload)
+                if _ix_is_pro_order_client(_ix_order_client_for(ix, client_id)):
+                    _ix_as_pro_market(payload)
+                else:
+                    payload = _coerce_algo_limit_order(
+                        payload, body=coerce_body, side=exit_side, iid=int(iid), seg=seg, username=username
+                    )
+                    payload.pop("_fillHint", None)
+                place_id = _ix_place_client_for(ix, client_id)
+                try:
+                    r = ix.place_order(client_id=place_id, order=payload)
+                except Exception as exc:
+                    if not _algo_forbids_market(exc):
+                        raise
+                    app.logger.warning("ALGO rejected market or price 0; exit retry is LIMIT (%s)", exc)
+                    payload = _coerce_algo_limit_order(
+                        exit_base, body=coerce_body, side=exit_side, iid=int(iid), seg=seg, username=username
+                    )
+                    payload.pop("_fillHint", None)
+                    r = ix.place_order(client_id=place_id, order=payload)
                 exited.append(
                     {
                         "segment": seg,

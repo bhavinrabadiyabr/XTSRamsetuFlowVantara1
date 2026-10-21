@@ -446,8 +446,9 @@ export function LiveLtpProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const streamUrl = useMemo(() => {
-    if (!token) return "";
-    return `${getMdStreamOrigin()}/api/md/stream?token=${encodeURIComponent(token)}`;
+    const origin = getMdStreamOrigin();
+    const q = token ? `?token=${encodeURIComponent(token)}` : "";
+    return `${origin}/api/md/stream${q}`;
   }, [token]);
 
   useEffect(() => {

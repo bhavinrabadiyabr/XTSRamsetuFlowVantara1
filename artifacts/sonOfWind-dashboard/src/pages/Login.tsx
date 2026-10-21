@@ -4,21 +4,16 @@ import { useAuth } from "@/auth/AuthContext";
 import { Eye, EyeOff } from "lucide-react";
 
 const UKEY = "sonofwind_login_user";
-const PKEY = "sonofwind_login_pass";
 
 export default function LoginPage() {
   const [, navigate] = useLocation();
   const { state, login } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
-  const initial = useMemo(() => {
-    const u = (localStorage.getItem(UKEY) || "").trim();
-    const p = localStorage.getItem(PKEY) || "";
-    return { u, p };
-  }, []);
+  const initialUser = useMemo(() => (localStorage.getItem(UKEY) || "").trim(), []);
 
-  const [username, setUsername] = useState(initial.u);
-  const [password, setPassword] = useState(initial.p);
+  const [username, setUsername] = useState(initialUser);
+  const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -29,10 +24,6 @@ export default function LoginPage() {
   useEffect(() => {
     localStorage.setItem(UKEY, username || "");
   }, [username]);
-
-  useEffect(() => {
-    localStorage.setItem(PKEY, password || "");
-  }, [password]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,7 +66,7 @@ export default function LoginPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="sow-login-glass__input w-full rounded-lg px-3 py-2.5 text-sm transition-shadow"
-                placeholder="SR04 / ADMIN"
+                placeholder="Username"
                 autoFocus
                 autoComplete="off"
                 style={{ textTransform: "uppercase" }}

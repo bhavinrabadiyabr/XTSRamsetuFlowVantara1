@@ -6,7 +6,6 @@ function resolveBackendOrigin(): string {
   }
   if (import.meta.env.DEV) return "";
   return "http://127.0.0.1:5000";
-  // return "https://trading.investeria.in";
 }
 
 export const BACKEND_ORIGIN = resolveBackendOrigin();
