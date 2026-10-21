@@ -265,7 +265,7 @@ INDEX_MD_SPECS: dict[str, dict[str, object]] = {
 
 
 def _operator_id() -> str:
-    return (_env("XTS_LOGIN_USER", "").strip().upper() or _env("XTS_OPERATOR_ID", "SANKALP").strip().upper() or "SANKALP")
+    return (_env("XTS_OPERATOR_ID", "").strip().upper() or _env("XTS_USER_ID", "BIZ09").strip().upper() or "BIZ09")
 
 
 def _login_accounts() -> dict[str, dict[str, str]]:

@@ -43,7 +43,7 @@ def _env(name: str, default: str = "") -> str:
 
 
 def broker_root() -> str:
-    raw = _env("XTS_ROOT") or _env("XTS_MD_ROOT") or "http://136.233.190.210:3000"
+    raw = _env("XTS_ROOT") or _env("XTS_MD_ROOT") or "http://oms.deltaxbroking.com:3000"
     return raw.strip().rstrip("/")
 
 
