@@ -1644,6 +1644,44 @@ button.sow-mtm-arm-btn:disabled {
   align-items: flex-end;
 }
 
+.nw-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+
+.nw-settings .nw-input,
+.nw-settings select.nw-input {
+  width: 76px;
+}
+
+.nw-tools--cd {
+  max-height: 48%;
+  overflow: auto;
+}
+
+.nw-unsaved {
+  margin: 8px 12px 0;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.nw-row--cd-actions {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+.nw-cd-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .nw-row--strikes,
 .nw-row--actions {
   align-items: center;

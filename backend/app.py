@@ -2248,6 +2248,55 @@ def api_fast1_open():
         return jsonify({"ok": False, "pending": True, "error": str(exc), "spot": None, "source": None})
 
 
+@app.get("/api/cd/range")
+def api_cd_range():
+    """Rolling HIGH/LOW of the last N closed TF-minute Sensex bars. The live bar is excluded."""
+    username = (_current_user() or "").strip().upper()
+    if not username:
+        return jsonify({"ok": False, "error": "Unauthorized", "ready": False, "tradable": False}), 401
+    try:
+        _ensure_market_streamer(username)
+        from market.cd_range import get_range, parse_range_params
+        from market.dashboard_connector import wire_market_streamer
+        from market.nifty_vwap import set_vwap_md_client
+
+        wire_market_streamer(_MD_STREAMER)
+        set_vwap_md_client(lambda: _MD_STREAMER.rest_client())
+        params = parse_range_params(
+            str(request.args.get("tf", "15")),
+            str(request.args.get("candles", "4")),
+            str(request.args.get("minGap", "50")),
+        )
+        if params is None:
+            return jsonify(
+                {
+                    "ok": False,
+                    "ready": False,
+                    "tradable": False,
+                    "high": None,
+                    "low": None,
+                    "mid": None,
+                    "gap": None,
+                    "error": "TF must be 1–60, candles 1–20, and min gap 0–5000.",
+                }
+            )
+        return jsonify(get_range(**params))
+    except Exception as exc:
+        app.logger.exception("api_cd_range failed")
+        return jsonify(
+            {
+                "ok": False,
+                "ready": False,
+                "tradable": False,
+                "high": None,
+                "low": None,
+                "mid": None,
+                "gap": None,
+                "error": str(exc),
+            }
+        )
+
+
 def _expand_json_strings_shallow(obj: object, depth: int = 0) -> object:
     """XTS quotes may embed JSON dicts as strings; expand best-effort."""
     if depth > 6 or obj is None:
@@ -3168,10 +3217,11 @@ def _ix_place_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None
 
 def _ix_as_pro_market(payload: dict[str, Any]) -> dict[str, Any]:
     """PRO59 may not place Limit. This gateway allows that client only as Market."""
+    tif = str(payload.get("timeInForce") or "").strip().upper()
     payload["orderType"] = "MARKET"
     payload["limitPrice"] = 0
     payload["stopPrice"] = 0
-    payload["timeInForce"] = "IOC"
+    payload["timeInForce"] = "EOS" if tif == "EOS" else "IOC"
     return payload
 
 
@@ -3607,7 +3657,7 @@ def _coerce_algo_limit_order(
         )
     payload["orderType"] = "LIMIT"
     payload["limitPrice"] = _marketable_limit_price(side, ltp)
-    payload["timeInForce"] = "IOC"
+    payload["timeInForce"] = _payload_tif(payload, "IOC")
     payload["_fillHint"] = {"ltp": ltp, "bid": bid, "ask": ask, "limitPrice": payload["limitPrice"]}
     app.logger.info(
         "algo MARKET->LIMIT iid=%s side=%s ltp=%s limit=%s",

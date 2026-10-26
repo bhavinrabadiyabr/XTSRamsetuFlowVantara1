@@ -8,13 +8,14 @@ import NiftyBothSidePanel from "@/components/NiftyBothSidePanel";
 import NiftySnakeBothSidePanel from "@/components/NiftySnakeBothSidePanel";
 import NiftyVwapPanel from "@/components/NiftyVwapPanel";
 import OneMinFastPanel from "@/components/OneMinFastPanel";
+import CdRangePanel from "@/components/CdRangePanel";
 import { SENSEX_DESK } from "@/lib/niftyVwapRules";
 import { bumpPositionsRefresh } from "@/lib/ixPortfolio";
 import { loadBothSideSession } from "@/lib/niftyBothSideRules";
 import { loadBothSideSession as loadSnakeBothSideSession } from "@/lib/niftySnakeBothSideRules";
 
 const RIGHT_TAB_KEY = "sow_right_pane_tab";
-type RightTab = "ladder" | "snake" | "bothside" | "snakebothside" | "vwap" | "sensexvwap" | "fast1";
+type RightTab = "ladder" | "snake" | "bothside" | "snakebothside" | "vwap" | "sensexvwap" | "fast1" | "cd";
 
 function loadRightTab(): RightTab {
   try {
@@ -22,7 +23,7 @@ function loadRightTab(): RightTab {
     if (loadSnakeBothSideSession()) return "snakebothside";
     if (loadBothSideSession()) return "bothside";
     const s = sessionStorage.getItem(RIGHT_TAB_KEY) || localStorage.getItem(RIGHT_TAB_KEY);
-    if (s === "snake" || s === "bothside" || s === "snakebothside" || s === "vwap" || s === "sensexvwap" || s === "fast1") {
+    if (s === "snake" || s === "bothside" || s === "snakebothside" || s === "vwap" || s === "sensexvwap" || s === "fast1" || s === "cd") {
       return s;
     }
     return "ladder";
@@ -135,6 +136,13 @@ export default function OptionsChain({
         >
           1 min Fast
         </button>
+        <button
+          type="button"
+          className={`sow-glass-tab${rightTab === "cd" ? " sow-glass-tab--active" : ""}`}
+          onClick={() => selectTab("cd")}
+        >
+          CD
+        </button>
         {/* <button
           type="button"
           className={`sow-glass-tab${rightTab === "bothside" ? " sow-glass-tab--active" : ""}`}
@@ -204,6 +212,9 @@ export default function OptionsChain({
           </div>
           <div className={rightTab === "fast1" ? "flex flex-1 min-h-0 flex-col overflow-hidden" : "hidden"}>
             <OneMinFastPanel key={resolved.index} chain={resolved} active={rightTab === "fast1"} />
+          </div>
+          <div className={rightTab === "cd" ? "flex flex-1 min-h-0 flex-col overflow-hidden" : "hidden"}>
+            <CdRangePanel chain={resolved} active={rightTab === "cd"} />
           </div>
           <div className={rightTab === "bothside" ? "flex flex-1 min-h-0 flex-col overflow-hidden" : "hidden"}>
             <NiftyBothSidePanel chain={resolved} />
