@@ -265,7 +265,7 @@ INDEX_MD_SPECS: dict[str, dict[str, object]] = {
 
 
 def _operator_id() -> str:
-    return (_env("XTS_OPERATOR_ID", "").strip().upper() or _env("XTS_USER_ID", "BIZ09").strip().upper() or "BIZ09")
+    return (_env("XTS_OPERATOR_ID", "").strip().upper() or _env("XTS_USER_ID", "VANTARA01").strip().upper() or "VANTARA01")
 
 
 def _login_accounts() -> dict[str, dict[str, str]]:
@@ -3690,9 +3690,15 @@ def _ix_segment_as_enum_string(seg_int: int) -> str:
 
 
 def _stamp_algo(payload: dict[str, Any]) -> dict[str, Any]:
-    """This host rejects algoID / algoName on POST /interactive/orders (Joi: not allowed)."""
+    """Attach the approved algo id and name. Omit both when they are not configured."""
+    algo_id = _env("XTS_ALGO_ID", "").strip()
+    algo_name = _env("XTS_ALGO_NAME", "").strip()
     for key in ("algoID", "algoId", "algoName", "AlgoID", "AlgoName"):
         payload.pop(key, None)
+    if algo_id:
+        payload["algoID"] = algo_id
+    if algo_name:
+        payload["algoName"] = algo_name
     return payload
 
 
