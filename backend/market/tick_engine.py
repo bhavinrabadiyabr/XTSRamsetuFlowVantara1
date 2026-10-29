@@ -142,6 +142,8 @@ class TickEngine:
             atp_1502 = new_atp
         use_atp = atp_1501 if atp_1501 > 0 else atp_1502
         raw_ltp = float(d.get("ltp") or 0.0)
+        if raw_ltp != raw_ltp or raw_ltp < 0.01 or raw_ltp > 1_000_000:
+            raw_ltp = 0.0
         if is_index and raw_ltp <= 0:
             try:
                 pc = float(d.get("prevClose") or prev_row.get("prevClose") or 0.0)
@@ -185,6 +187,10 @@ class TickEngine:
                 )
         bid_now = float(d.get("bid") or d.get("bid_price") or prev_row.get("bid") or 0.0)
         ask_now = float(d.get("ask") or d.get("ask_price") or prev_row.get("ask") or 0.0)
+        if bid_now != bid_now or bid_now < 0.01 or bid_now > 1_000_000:
+            bid_now = 0.0
+        if ask_now != ask_now or ask_now < 0.01 or ask_now > 1_000_000:
+            ask_now = 0.0
         rest_ltp = float(prev_row.get("_ltp_rest") or 0.0)
         rest_ts = float(prev_row.get("_ltp_rest_ts") or 0.0)
         if is_seed and raw_ltp > 0 and not is_index:
@@ -221,6 +227,10 @@ class TickEngine:
                     new_ltp = recon
         new_bid = float(d.get("bid") or d.get("bid_price") or 0.0)
         new_ask = float(d.get("ask") or d.get("ask_price") or 0.0)
+        if new_bid != new_bid or new_bid < 0.01 or new_bid > 1_000_000:
+            new_bid = 0.0
+        if new_ask != new_ask or new_ask < 0.01 or new_ask > 1_000_000:
+            new_ask = 0.0
         prev_ltp = float(prev_row.get("ltp") or 0.0)
         prev_bid = float(prev_row.get("bid") or 0.0)
         prev_ask = float(prev_row.get("ask") or 0.0)

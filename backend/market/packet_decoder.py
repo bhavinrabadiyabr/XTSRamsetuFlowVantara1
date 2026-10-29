@@ -305,6 +305,13 @@ def _instrument_int(x: Any) -> int | None:
         return None
 
 
+def _plausible_px(v: float) -> float:
+    """Drop mis-decoded doubles (~1e185 or denormals). Index and option prices stay under 10 lakh."""
+    if v != v or v < 0.01 or v > 1_000_000:
+        return 0.0
+    return v
+
+
 def _first_positive(*vals: Any) -> float:
     for v in vals:
         if v is None or v == "":
@@ -346,15 +353,15 @@ def _msg_to_dashboard_row(msg: dict[str, Any]) -> dict[str, Any] | None:
         ai = {}
 
     wall = time.time()
-    ltp = _first_positive(
+    ltp = _plausible_px(_first_positive(
         tl.get("LastTradedPrice"),
         tl.get("lastTradedPrice"),
         tl.get("LTP"),
         tl.get("ltp"),
         msg.get("LastTradedPrice"),
         msg.get("ltp"),
-    )
-    bid = _first_positive(
+    ))
+    bid = _plausible_px(_first_positive(
         bi.get("Price"),
         tl.get("BidPrice"),
         tl.get("bidPrice"),
@@ -362,8 +369,8 @@ def _msg_to_dashboard_row(msg: dict[str, Any]) -> dict[str, Any] | None:
         tl.get("bid"),
         msg.get("BidPrice"),
         msg.get("bid"),
-    )
-    ask = _first_positive(
+    ))
+    ask = _plausible_px(_first_positive(
         ai.get("Price"),
         tl.get("AskPrice"),
         tl.get("askPrice"),
@@ -372,15 +379,15 @@ def _msg_to_dashboard_row(msg: dict[str, Any]) -> dict[str, Any] | None:
         tl.get("ask"),
         msg.get("AskPrice"),
         msg.get("ask"),
-    )
-    atp = _first_positive(
+    ))
+    atp = _plausible_px(_first_positive(
         tl.get("AverageTradedPrice"),
         tl.get("averageTradedPrice"),
         tl.get("ATP"),
         tl.get("atp"),
         msg.get("AverageTradedPrice"),
         msg.get("atp"),
-    )
+    ))
     if not (atp > 0):
         try:
             traded_value = float(tl.get("TotalValueTraded") or msg.get("TotalValueTraded") or 0.0)
@@ -388,7 +395,7 @@ def _msg_to_dashboard_row(msg: dict[str, Any]) -> dict[str, Any] | None:
         except (TypeError, ValueError):
             traded_value = traded_qty = 0.0
         if traded_value > 0 and traded_qty > 0:
-            atp = traded_value / traded_qty
+            atp = _plausible_px(traded_value / traded_qty)
     prev_close = 0.0
     try:
         c = tl.get("Close")

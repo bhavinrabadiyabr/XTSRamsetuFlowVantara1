@@ -1,18 +1,22 @@
 import { peekLiveLtp } from "@/context/LiveLtpContext";
 
+/** Index spots and option premiums in this app stay under 10 lakh. Mis-decoded doubles are ~1e185. */
+export function plausiblePx(v: unknown): number | null {
+  const n = typeof v === "number" ? v : NaN;
+  if (!Number.isFinite(n) || n < 0.01 || n > 1_000_000) return null;
+  return n;
+}
+
 /** XTS LastTradedPrice tape — peek is tick-to-tick; map is the last React flush. */
 export function liveTapeLtp(
   iid: number | null | undefined,
   fallback?: Record<number, number> | number | null,
 ): number | null {
   if (typeof iid !== "number" || !Number.isFinite(iid) || iid <= 0) return null;
-  const peek = peekLiveLtp(iid);
+  const peek = plausiblePx(peekLiveLtp(iid));
   if (peek != null) return peek;
-  if (typeof fallback === "number" && Number.isFinite(fallback) && fallback > 0) return fallback;
-  if (fallback && typeof fallback === "object") {
-    const v = fallback[iid];
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
-  }
+  if (typeof fallback === "number") return plausiblePx(fallback);
+  if (fallback && typeof fallback === "object") return plausiblePx(fallback[iid]);
   return null;
 }
 

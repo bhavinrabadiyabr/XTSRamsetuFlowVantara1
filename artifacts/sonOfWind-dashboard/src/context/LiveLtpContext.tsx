@@ -48,17 +48,25 @@ export function peekLiveTick(id: number): LiveTickPeek | null {
   return liveTickPeek.get(id) ?? null;
 }
 
+function keepPx(v: number | null | undefined): number | null {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0.01 || v > 1_000_000) return null;
+  return v;
+}
+
 export function peekLiveLtp(id: number): number | null {
   const row = peekLiveTick(id);
-  return row && row.ltp > 0 ? row.ltp : null;
+  return keepPx(row?.ltp);
 }
 
 function rememberLiveTick(id: number, ltp: number | null, bid: number | null, ask: number | null): void {
   const prev = liveTickPeek.get(id);
-  const nextLtp = ltp != null && ltp > 0 ? ltp : prev?.ltp ?? 0;
-  const nextBid = bid != null && bid > 0 ? bid : prev?.bid ?? null;
-  const nextAsk = ask != null && ask > 0 ? ask : prev?.ask ?? null;
-  if (!(nextLtp > 0) && nextBid == null && nextAsk == null) return;
+  const nextLtp = keepPx(ltp) ?? keepPx(prev?.ltp) ?? 0;
+  const nextBid = keepPx(bid) ?? keepPx(prev?.bid);
+  const nextAsk = keepPx(ask) ?? keepPx(prev?.ask);
+  if (!(nextLtp > 0) && nextBid == null && nextAsk == null) {
+    liveTickPeek.delete(id);
+    return;
+  }
   liveTickPeek.set(id, { ltp: nextLtp, bid: nextBid, ask: nextAsk });
 }
 
@@ -700,18 +708,18 @@ export function LiveLtpProvider({ children }: { children: ReactNode }) {
 
         let ltp = typeof ltpPicked === "number" ? ltpPicked : NaN;
 
-        /** Subnormal decoded noise often prints as `0.00` after fixing binary overlap in backend — drop it. */
-        if (ltp !== 0 && Number.isFinite(ltp) && Math.abs(ltp) < 1e-9) {
-          return;
+        /** Subnormal noise and mis-decoded doubles (~1e185) are not prices. */
+        if (ltp !== 0 && Number.isFinite(ltp) && (Math.abs(ltp) < 0.01 || ltp > 1_000_000)) {
+          ltp = NaN;
         }
 
-        const bidN = typeof bid === "number" && Number.isFinite(bid) && bid > 0 ? bid : NaN;
-        const askN = typeof ask === "number" && Number.isFinite(ask) && ask > 0 ? ask : NaN;
+        const bidN = typeof bid === "number" && bid >= 0.01 && bid <= 1_000_000 ? bid : NaN;
+        const askN = typeof ask === "number" && ask >= 0.01 && ask <= 1_000_000 ? ask : NaN;
 
         if (ltp === 0 || !Number.isFinite(ltp)) {
           // Depth-only packets have no last trade — keep the live print. Never invent mid/ask as LTP.
-          const prevPeek = liveTickPeek.get(id);
-          if (prevPeek?.ltp && prevPeek.ltp > 0) ltp = prevPeek.ltp;
+          const prev = liveTickPeek.get(id)?.ltp;
+          if (typeof prev === "number" && prev >= 0.01 && prev <= 1_000_000) ltp = prev;
         }
 
         if (Number.isFinite(ltp) && ltp > 0) ltp = indexDisplayLtp(id, ltp);

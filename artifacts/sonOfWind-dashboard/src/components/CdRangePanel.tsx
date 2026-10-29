@@ -30,17 +30,20 @@ import {
   trailStopPx,
   validateCdDraft,
   waitInsideAfter,
+  badPremiumTick,
+  shortMtm,
+  signedPts,
   type CdDraft,
   type CdRangePayload,
   type CdSettings,
   type CloseLabel,
+  type LogKind,
   type OptionSide,
 } from "@/lib/cdRangeRules";
 import { fmtPrice, fmtQty } from "@/lib/formatNumber";
 import { bumpPositionsRefresh, clearLocalPosition, setLocalShortPosition } from "@/lib/ixPortfolio";
 import { liveTapeLtp } from "@/lib/liveQuote";
 import { useSubscribeTouchline } from "@/lib/mdRegistry";
-import { badPremiumTick, shortMtm, signedPts, type LogKind } from "@/lib/niftyVwapRules";
 import type { ChainExpiriesResponse, ChainResolveResponse, ChainResolved } from "@/types/market";
 import { xtsOrderFillPx } from "@/lib/xtsOrder";
 
@@ -148,7 +151,7 @@ function loadSession(): CdSession | null {
 function premiumOf(iid: number | null, ltps: Record<number, number>): number | null {
   if (iid == null) return null;
   const tick = peekLiveTick(iid);
-  if (tick?.ltp && tick.ltp > 0) return tick.ltp;
+  if (tick?.ltp && tick.ltp >= 0.01 && tick.ltp <= 1_000_000) return tick.ltp;
   return liveTapeLtp(iid, ltps);
 }
 

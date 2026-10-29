@@ -2169,85 +2169,6 @@ def md_focus():
     return jsonify({"ok": True, "channel": channel, "count": len(instruments)})
 
 
-@app.get("/api/vwap/data")
-def api_vwap_data():
-    """Session ohlc4 VWAP from XTS 1-minute Nifty candles. The last price is not the line."""
-    username = (_current_user() or "").strip().upper()
-    if not username:
-        return jsonify({"ok": False, "error": "Unauthorized", "signal": "NONE", "signalLabel": "No trade"}), 401
-    try:
-        _ensure_market_streamer(username)
-        from market.dashboard_connector import wire_market_streamer
-        from market.nifty_vwap import get_vwap_payload, set_vwap_md_client
-
-        wire_market_streamer(_MD_STREAMER)
-        set_vwap_md_client(lambda: _MD_STREAMER.rest_client())
-        return jsonify(get_vwap_payload())
-    except Exception as exc:
-        app.logger.exception("api_vwap_data failed")
-        return jsonify(
-            {
-                "ok": False,
-                "error": str(exc),
-                "stale": False,
-                "vwap": 0,
-                "liveVwap": 0,
-                "signal": "NONE",
-                "signalLabel": "No trade",
-            }
-        )
-
-
-@app.get("/api/vwap/sensex")
-def api_sensex_vwap_data():
-    """Session ohlc4 VWAP from XTS 1-minute Sensex candles. The last price is not the line."""
-    username = (_current_user() or "").strip().upper()
-    if not username:
-        return jsonify({"ok": False, "error": "Unauthorized", "signal": "NONE", "signalLabel": "No trade"}), 401
-    try:
-        _ensure_market_streamer(username)
-        from market.dashboard_connector import wire_market_streamer
-        from market.sensex_vwap import get_vwap_payload, set_vwap_md_client
-
-        wire_market_streamer(_MD_STREAMER)
-        set_vwap_md_client(lambda: _MD_STREAMER.rest_client())
-        return jsonify(get_vwap_payload())
-    except Exception as exc:
-        app.logger.exception("api_sensex_vwap_data failed")
-        return jsonify(
-            {
-                "ok": False,
-                "error": str(exc),
-                "stale": False,
-                "vwap": 0,
-                "liveVwap": 0,
-                "signal": "NONE",
-                "signalLabel": "No trade",
-            }
-        )
-
-
-@app.get("/api/fast1/open")
-def api_fast1_open():
-    """Locked 09:20 one-minute spot open. Nifty or Sensex follows the query."""
-    username = (_current_user() or "").strip().upper()
-    if not username:
-        return jsonify({"ok": False, "error": "Unauthorized", "spot": None, "pending": False}), 401
-    underlying = str(request.args.get("underlying") or "NIFTY")
-    try:
-        _ensure_market_streamer(username)
-        from market.dashboard_connector import wire_market_streamer
-        from market.fast1_open import get_open
-        from market.nifty_vwap import set_vwap_md_client
-
-        wire_market_streamer(_MD_STREAMER)
-        set_vwap_md_client(lambda: _MD_STREAMER.rest_client())
-        return jsonify(get_open(underlying))
-    except Exception as exc:
-        app.logger.exception("api_fast1_open failed")
-        return jsonify({"ok": False, "pending": True, "error": str(exc), "spot": None, "source": None})
-
-
 @app.get("/api/cd/range")
 def api_cd_range():
     """Rolling HIGH/LOW of the last N closed TF-minute Sensex bars. The live bar is excluded."""
@@ -2256,12 +2177,11 @@ def api_cd_range():
         return jsonify({"ok": False, "error": "Unauthorized", "ready": False, "tradable": False}), 401
     try:
         _ensure_market_streamer(username)
-        from market.cd_range import get_range, parse_range_params
+        from market.cd_range import get_range, parse_range_params, set_md_client
         from market.dashboard_connector import wire_market_streamer
-        from market.nifty_vwap import set_vwap_md_client
 
         wire_market_streamer(_MD_STREAMER)
-        set_vwap_md_client(lambda: _MD_STREAMER.rest_client())
+        set_md_client(lambda: _MD_STREAMER.rest_client())
         params = parse_range_params(
             str(request.args.get("tf", "15")),
             str(request.args.get("candles", "4")),
@@ -3215,20 +3135,19 @@ def _ix_place_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None
     return placeholder
 
 
-def _ix_as_pro_market(payload: dict[str, Any]) -> dict[str, Any]:
-    """PRO59 may not place Limit. This gateway allows that client only as Market."""
-    tif = str(payload.get("timeInForce") or "").strip().upper()
-    payload["orderType"] = "MARKET"
-    payload["limitPrice"] = 0
-    payload["stopPrice"] = 0
-    payload["timeInForce"] = "EOS" if tif == "EOS" else "IOC"
-    return payload
+def _market_not_permitted(text: str) -> bool:
+    """True when this gateway rejected a MARKET order for the client (PRO59 has no Market permission)."""
+    s = str(text or "").lower()
+    if "e-orders-0002" in s or "not allowed for algo" in s:
+        return True
+    if "ordertype [market]" in s or "order type [market]" in s:
+        return True
+    return "not permission" in s and "market" in s
 
 
 def _algo_forbids_market(err: BaseException) -> bool:
-    """ALGO logins reject MARKET and limitPrice 0 (e-orders-0002)."""
-    s = str(err).lower()
-    return "e-orders-0002" in s or "not allowed for algo" in s
+    """ALGO and PRO59 logins reject MARKET and limitPrice 0."""
+    return _market_not_permitted(str(err))
 
 
 def _ix_query_client_for(ix: XtsInteractiveClient, client_id: str) -> str | None:
@@ -3690,15 +3609,9 @@ def _ix_segment_as_enum_string(seg_int: int) -> str:
 
 
 def _stamp_algo(payload: dict[str, Any]) -> dict[str, Any]:
-    """Attach the approved algo id and name. Omit both when they are not configured."""
-    algo_id = _env("XTS_ALGO_ID", "").strip()
-    algo_name = _env("XTS_ALGO_NAME", "").strip()
+    """Drop algoID / algoName. This host's POST /interactive/orders schema rejects them (Joi allowUnknown), including NSECD."""
     for key in ("algoID", "algoId", "algoName", "AlgoID", "AlgoName"):
         payload.pop(key, None)
-    if algo_id:
-        payload["algoID"] = algo_id
-    if algo_name:
-        payload["algoName"] = algo_name
     return payload
 
 
@@ -3989,19 +3902,15 @@ def _ix_execute_pending_as_market(
         }
         _stamp_algo(market_payload)
         chase_body = {"ltp": ltp, "bid": bid, "ask": ask}
-        if _ix_is_pro_order_client(oc):
-            coerced = _ix_as_pro_market(market_payload)
-            hint = {"ltp": ltp, "bid": bid, "ask": ask, "limitPrice": 0}
-        else:
-            coerced = _coerce_algo_limit_order(
-                market_payload,
-                body=chase_body,
-                side=side,
-                iid=iid,
-                seg=seg,
-                username=username,
-            )
-            hint = coerced.pop("_fillHint", None)
+        coerced = _coerce_algo_limit_order(
+            market_payload,
+            body=chase_body,
+            side=side,
+            iid=iid,
+            seg=seg,
+            username=username,
+        )
+        hint = coerced.pop("_fillHint", None)
         app.logger.info(
             "pending->market iid=%s side=%s qty=%s ltp=%s limit=%s",
             iid,
@@ -4134,22 +4043,14 @@ def api_ix_place_order():
         _stamp_algo(payload)
         order_base = dict(payload)
         pro_order = _ix_is_pro_order_client(_ix_order_client_for(ix, client_id))
-        if pro_order:
-            _ix_as_pro_market(payload)
-            fill_hint = {
-                "ltp": float(body.get("ltp") or 0),
-                "bid": float(body.get("bid") or 0),
-                "ask": float(body.get("ask") or 0),
-                "limitPrice": 0,
-            }
-        else:
-            try:
-                payload = _coerce_algo_limit_order(
-                    payload, body=body, side=side, iid=iid, seg=seg, username=username
-                )
-            except ValueError as ve:
-                return _json_no_store({"ok": False, "error": str(ve)}, status=400)
-            fill_hint = payload.pop("_fillHint", None)
+        # PRO59 has no Market permission. Price the order as a marketable LIMIT.
+        try:
+            payload = _coerce_algo_limit_order(
+                payload, body=body, side=side, iid=iid, seg=seg, username=username
+            )
+        except ValueError as ve:
+            return _json_no_store({"ok": False, "error": str(ve)}, status=400)
+        fill_hint = payload.pop("_fillHint", None)
 
         oc = _ix_order_client_for(ix, client_id)
         app.logger.info(
@@ -4197,12 +4098,28 @@ def api_ix_place_order():
                 return _json_no_store({"ok": False, "error": str(ve)}, status=400)
         _ix_drop_position_cache(username)
         reject = _xts_place_reject_reason(res)
+        if reject and _market_not_permitted(reject):
+            app.logger.warning("gateway rejected MARKET; retrying LIMIT (%s)", reject)
+            try:
+                payload = _coerce_algo_limit_order(
+                    dict(order_base), body=body, side=side, iid=iid, seg=seg, username=username
+                )
+            except ValueError as ve:
+                return _json_no_store({"ok": False, "error": str(ve)}, status=400)
+            fill_hint = payload.pop("_fillHint", None)
+            try:
+                res = ix.place_order(client_id=_ix_place_client_for(ix, oc or ""), order=payload)
+            except Exception as exc:
+                if not _algo_forbids_market(exc):
+                    raise
+                return _json_no_store({"ok": False, "error": str(exc), "request": payload}, status=400)
+            reject = _xts_place_reject_reason(res)
         execute_pending = bool(body.get("executeIfPending") or body.get("execute_if_pending"))
         book_only = bool(body.get("bookOnlyIfFilled"))
         unfilled_ioc = bool(reject) and (
             "16388" in reject or "cancelled by system" in reject.lower() or "canceled by system" in reject.lower()
         )
-        # Wish handles 16388 itself: a cancel that already traded is a fill, not a reject.
+        # bookOnlyIfFilled handles 16388 itself: a cancel that already traded is a fill, not a reject.
         if reject and not book_only and not (execute_pending and unfilled_ioc):
             return _json_no_store(
                 {"ok": False, "error": reject, "request": payload, "raw": res, "fillHint": fill_hint},
@@ -4462,13 +4379,10 @@ def api_ix_exit_open_positions():
                 exit_base = dict(payload)
                 coerce_body = dict(p) if isinstance(p, dict) else {}
                 coerce_body["liveReprice"] = True
-                if _ix_is_pro_order_client(_ix_order_client_for(ix, client_id)):
-                    _ix_as_pro_market(payload)
-                else:
-                    payload = _coerce_algo_limit_order(
-                        payload, body=coerce_body, side=exit_side, iid=int(iid), seg=seg, username=username
-                    )
-                    payload.pop("_fillHint", None)
+                payload = _coerce_algo_limit_order(
+                    payload, body=coerce_body, side=exit_side, iid=int(iid), seg=seg, username=username
+                )
+                payload.pop("_fillHint", None)
                 place_id = _ix_place_client_for(ix, client_id)
                 try:
                     r = ix.place_order(client_id=place_id, order=payload)

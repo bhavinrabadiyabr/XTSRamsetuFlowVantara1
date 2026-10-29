@@ -20,6 +20,9 @@ import {
   squareTime,
   stopPx,
   targetPx,
+  badPremiumTick,
+  shortMtm,
+  signedPts,
   targetReached,
   trailArmPx,
   trailStopPx,
@@ -159,5 +162,10 @@ const monday = new Date("2026-10-26T04:30:00Z");
 const thursday = new Date("2026-10-29T04:30:00Z");
 assert(nearestThursdayExpiry(rows, monday)?.label === "29Oct2026", "Monday uses the coming Thursday");
 assert(nearestThursdayExpiry(rows, thursday)?.label === "05Nov2026", "Thursday itself is skipped");
+assert(badPremiumTick(120, 0.2), "a tick under 0.50 is ignored when the fill is at least 5");
+assert(!badPremiumTick(4, 0.2), "a cheap fill keeps the tick");
+assert(shortMtm(90, 80, 40) === 400, "short profit is fill minus premium times qty");
+assert(signedPts(-12.5) === "-12.50", "negative points keep the sign");
+assert(signedPts(3) === "+3.00", "positive points get a plus");
 
 console.log("cdRangeRules ok");
